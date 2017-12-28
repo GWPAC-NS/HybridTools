@@ -16,21 +16,17 @@ from pycbc.types import TimeSeries,FrequencySeries
 import multiprocessing as mp
 from multiprocessing import Pool
 from pycbc.waveform import get_td_waveform
-h1_paths = glob.glob('HybridAnnex/BNS/B00/TEOBResum_ROMlambda_2684.34/B0_TEOBResum_ROMfp2_*.h5')
-h2_paths = glob.glob('HybridAnnex/BNS/B00/TaylorT2lambda_2684.34/B0_TaylorT2fp2_*.h5')
-h1_paths = h1_paths[1:len(h1_paths)]
+h1_paths = glob.glob('HybridAnnex/BNS/Haas500/TaylorT2/Haas_TaylorT2fp2_*.h5')
+h2_paths = glob.glob('HybridAnnex/BNS/Haas500/TEOBResum_ROM/Haas_TEOBResum_ROMfp2_*.h5')
+h1_paths = h1_paths[:len(h1_paths)-1]
 h2_paths = h2_paths[:len(h2_paths)-1]
-#for name in h2_paths:
-#    print name, 2
-#for name in h1_paths:
-#    print name, 1
 h1_data = h5py.File(h1_paths[0], 'r')
 h2_data = h5py.File(h2_paths[0], 'r')
 sim_name = h1_data.attrs['sim_name']
 approx1 = h1_data.attrs['approx']
 approx2 = h2_data.attrs['approx']
-ip2_h1 = 0 
-ip2_h2 = 0
+ip2_h1 = 500
+ip2_h2 = 500
 sim_type = 'BNS'
 psd_type = 'aLIGOZeroDetHighPower'
 h1_data.close()
@@ -39,7 +35,6 @@ sample_rate = 4096.0*10
 delta_t = 1.0/sample_rate
 distance = 1.0
 inclination = 0.0
-
 def _poolinit():
     global prof
     prof = cProfile.Profile()
@@ -47,16 +42,15 @@ def _poolinit():
         prof.dump_stats('./Profiles/profile-%s.out' % mp.current_process().pid)
     mp.util.Finalize(None,finish,exitpriority = 1)
 
-def compare(h1_path,h2_path): 
-    global distance 
+def distinguish(h1_path,h2_path):
+    global distance
     global inclination
-    global _snr
     hh1 = h5py.File(h1_path, 'r')
     hh2 = h5py.File(h2_path, 'r')
     distance = 1.0
     inclination = 0.0
-    m1 = hh1.attrs['grav_mass1']
-    m2 = hh1.attrs['grav_mass2']
+    m1 = hh1.attrs['ADM_mass1']
+    m2 = hh1.attrs['ADM_mass2']
     s1x = hh1.attrs['spin1x']
     s1y = hh1.attrs['spin1y']
     s1z = hh1.attrs['spin1z']
@@ -106,33 +100,41 @@ def compare(h1_path,h2_path):
     psd = aLIGOZeroDetHighPower(f_len, delta_f, f_cutoff)
     h1p = np.array(h1p)
     h2p = np.array(h2p)
-    l2_distance = hy.delta_h(h1p,h2p)
-    #print h1_path,'path1'
-    #print h2_path,'path2'
     h1p_tilde = np.fft.fft(h1p,norm=None)/sample_rate
-    h2p_tilde = np.fft.fft(h2p,norm=None)/sample_rate 
+    h2p_tilde = np.fft.fft(h2p,norm=None)/sample_rate
     h1p_tilde_new = FrequencySeries(h1p_tilde[:len(h1p)/2], delta_f=delta_f)
     h2p_tilde_new = FrequencySeries(h2p_tilde[:len(h2p)/2], delta_f=delta_f)
     h1p_tilde_new.resize(f_len)
     h2p_tilde_new.resize(f_len)
-    match_plus, i = match(h1p_tilde_new,h2p_tilde_new,psd=psd,low_frequency_cutoff=f_cutoff)
-    return(l2_distance,match_plus,hh1_shift_time,hh2_shift_time,hh1_freq,hh2_freq)
-    ##       0          1            2             3               4       5
-l2_norm = []
-match_filter = []
+    x,y,norm11 = matched_filter_core(h1p_tilde_new,h1p_tilde_new,psd,low_frequency_cutoff=f_cutoff)
+    x,y,norm22 = matched_filter_core(h2p_tilde_new,h1p_tilde_new,psd,low_frequency_cutoff=f_cutoff)
+    x,y,norm12 = matched_filter_core(h1p_tilde_new,h2p_tilde_new,psd,low_frequency_cutoff=f_cutoff)
+    sig11 = sigmasq(h1p_tilde_new,psd,low_frequency_cutoff=f_cutoff)
+    sig22 = sigmasq(h2p_tilde_new,psd,low_frequency_cutoff=f_cutoff)
+    sig12 =sigmasq(h2p_tilde_new,psd,low_frequency_cutoff=f_cutoff)
+    m11,i = match(h1p_tilde_new,h1p_tilde_new,psd=psd,low_frequency_cutoff=f_cutoff) 
+    m22,i = match(h2p_tilde_new,h2p_tilde_new,psd=psd,low_frequency_cutoff=f_cutoff)  
+    m12,i = match(h1p_tilde_new,h2p_tilde_new,psd=psd,low_frequency_cutoff=f_cutoff)
+    disting  = m11 + m22 - 2*m12
+    disting2 = (m11*sig11**(.5))/norm11 + (m22*sig22**(.5))/norm22 - 2*(m12*sig12**(.5))/norm12  
+    return(disting,disting2,hh1_shift_time,hh2_shift_time,hh1_freq,hh2_freq)
+    ##       0          1                2             3         4      
+
+distinguish1 = []
+distinguish2 = []
 hh1_shift_time = []
 hh2_shift_time = []
 hh1_hybridize_freq = []
 hh2_hybridize_freq = []
 if __name__ == '__main__':
     p = mp.Pool(mp.cpu_count())
-    for i,h1_path in enumerate(h1_paths[:51]):
-        h2_path_iter = h2_paths[i:51]
-        func_compare = partial(compare,h1_path)
-        comparisons = p.map(func_compare,h2_path_iter)
+    for i,h1_path in enumerate(h1_paths[:100]):
+        h2_path_iter = h2_paths[i:100]
+        func_distinguish = partial(distinguish,h1_path)
+        comparisons = p.map(func_distinguish,h2_path_iter)
         for tuple_data in comparisons:
-            l2_norm.append(tuple_data[0])
-            match_filter.append(tuple_data[1])
+            distinguish1.append(tuple_data[0])
+            distinguish2.append(tuple_data[1])
             hh1_shift_time.append(tuple_data[2])
             hh2_shift_time.append(tuple_data[3])
             hh1_hybridize_freq.append(tuple_data[4])
@@ -144,8 +146,8 @@ if __name__ == '__main__':
         except OSError as exc:
             if exc.errno != errno.EEXIST:
                 raise
-    with h5py.File(h5_dir+approx1+'-'+approx2+'_psd_'+psd_type+'.h5','w') as fd:
-        fd.attrs.create('Read_Group', 'Flynn')
+    with h5py.File(h5_dir+approx1+'-'+approx2+'_psd_'+psd_type+'distinguish.h5','w') as fd:
+        fd.attrs.create('group', 'Read_Group')
         fd.attrs.create('approx1', approx1)
         fd.attrs.create('approx2', approx2)
         fd.attrs.create('sim_name', sim_name)
@@ -154,25 +156,6 @@ if __name__ == '__main__':
         fd.create_dataset(approx2+'_shift_time',data=hh2_shift_time)
         fd.create_dataset(approx1+'_hybridize_freq',data=hh1_hybridize_freq)
         fd.create_dataset(approx2+'_hybridize_freq',data=hh2_hybridize_freq)
-        fd.create_dataset('L2_norm',data=l2_norm)
-        fd.create_dataset('match_filter',data=match_filter)
+        fd.create_dataset('distinguish_normed',data=distinguish1)
+        fd.create_dataset('distinguish_unnormed',data=distinguish2)
         fd.close()
-'''
-tlen = max(len(hplus), len(hplus1))
-hplus.resize(tlen)
-hplus1.resize(tlen)
-delta_f = 1.0 / hplus1.duration
-flen = tlen/2 + 1
-psd = aLIGOZeroDetHighPower(flen, delta_f, f_low)
-x,y,norm11 = matched_filter_core(hplus,hplus,psd,low_frequency_cutoff=f_low)
-m11, i = match(hplus, hplus, psd=psd, low_frequency_cutoff=f_low)
-sig11 = sigmasq(hplus,psd,low_frequency_cutoff=f_low)
-x,y,norm22 = matched_filter_core(hplus1,hplus1,psd,low_frequency_cutoff=f_low)
-m22, i = match(hplus1, hplus1, psd=psd, low_frequency_cutoff=f_low)
-sig22 = sigmasq(hplus1,psd,low_frequency_cutoff=f_low)
-x,y,norm12 = matched_filter_core(hplus,hplus1,psd,low_frequency_cutoff=f_low)
-m12, i = match(hplus, hplus1, psd=psd, low_frequency_cutoff=f_low)
-sig12 =sigmasq(hplus1,psd,low_frequency_cutoff=f_low)
-disting = (m11*sig11**(.5)/norm11+m22*sig22**(.5)/norm22-2*m12*sig12**(.5)/norm12)**.5
-print disting
-'''

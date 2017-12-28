@@ -1,5 +1,3 @@
-import time
-import cProfile
 import os
 import glob
 import hybridmodules as hy
@@ -10,27 +8,22 @@ import matplotlib.pyplot as plt
 import scipy as sci
 import lal
 import lalsimulation as lalsim
-from pycbc.filter import match,matched_filter,sigmasq,make_frequency_series,matched_filter_core
+from pycbc.filter import match,sigmasq
 from pycbc.psd import aLIGOZeroDetHighPower
-from pycbc.types import TimeSeries,FrequencySeries
 import multiprocessing as mp
 from multiprocessing import Pool
 from pycbc.waveform import get_td_waveform
-h1_paths = glob.glob('HybridAnnex/BNS/B00/TEOBResum_ROMlambda_2684.34/B0_TEOBResum_ROMfp2_*.h5')
-h2_paths = glob.glob('HybridAnnex/BNS/B00/TaylorT2lambda_2684.34/B0_TaylorT2fp2_*.h5')
-h1_paths = h1_paths[1:len(h1_paths)]
+h1_paths = glob.glob('HybridAnnex/BNS/Haas500/TaylorT2/Haas_TaylorT2fp2_*.h5')
+h2_paths = glob.glob('HybridAnnex/BNS/Haas500/TaylorT4/Haas_TaylorT4fp2_*.h5')
+h1_paths = h1_paths[:len(h1_paths)-1]
 h2_paths = h2_paths[:len(h2_paths)-1]
-#for name in h2_paths:
-#    print name, 2
-#for name in h1_paths:
-#    print name, 1
 h1_data = h5py.File(h1_paths[0], 'r')
 h2_data = h5py.File(h2_paths[0], 'r')
 sim_name = h1_data.attrs['sim_name']
 approx1 = h1_data.attrs['approx']
 approx2 = h2_data.attrs['approx']
-ip2_h1 = 0 
-ip2_h2 = 0
+ip2_h1 = 500 
+ip2_h2 = 500
 sim_type = 'BNS'
 psd_type = 'aLIGOZeroDetHighPower'
 h1_data.close()
@@ -40,23 +33,15 @@ delta_t = 1.0/sample_rate
 distance = 1.0
 inclination = 0.0
 
-def _poolinit():
-    global prof
-    prof = cProfile.Profile()
-    def finish():
-        prof.dump_stats('./Profiles/profile-%s.out' % mp.current_process().pid)
-    mp.util.Finalize(None,finish,exitpriority = 1)
-
 def compare(h1_path,h2_path): 
     global distance 
     global inclination
-    global _snr
     hh1 = h5py.File(h1_path, 'r')
     hh2 = h5py.File(h2_path, 'r')
     distance = 1.0
     inclination = 0.0
-    m1 = hh1.attrs['grav_mass1']
-    m2 = hh1.attrs['grav_mass2']
+    m1 = hh1.attrs['ADM_mass1']
+    m2 = hh1.attrs['ADM_mass2']
     s1x = hh1.attrs['spin1x']
     s1y = hh1.attrs['spin1y']
     s1z = hh1.attrs['spin1z']
@@ -76,8 +61,8 @@ def compare(h1_path,h2_path):
     f_lower_hh2 = hh2.attrs['f_lower_at_1MSUN']/(2.0 * lal.TWOPI * lal.MTSUN_SI*(m1+m2))
     hh1_freq = hh1.attrs['hybridize_freq']
     hh2_freq = hh2.attrs['hybridize_freq']
-    hh1_shift_time = hh1.attrs['shift_time']
-    hh2_shift_time = hh2.attrs['shift_time']
+    hh1_shift_time = hh1.attrs['hybridize_freq']
+    hh2_shift_time = hh2.attrs['hybridize_freq']
     hh1.close()
     hh2.close()
     h1p,h1c = get_td_waveform(approximant='NR_hdf5',numrel_data=h1_path,mass1=m1,
@@ -103,21 +88,10 @@ def compare(h1_path,h2_path):
     f_cutoff = 30.0
     #psd_path = '/home/jsread/O2PSDS/lalinferencemcmc-1-V1H1L1-1187008882.45-20.hdf5L1-PSD.txt'
     #real_psd = pycbc.psd.read.from_txt(psd_path, f_len, delta_f, f_cutoff, is_asd_file=True)
-    psd = aLIGOZeroDetHighPower(f_len, delta_f, f_cutoff)
-    h1p = np.array(h1p)
-    h2p = np.array(h2p)
+    psd = aLIGOZeroDetHighPower(f_len, delta_f, f_cutoff) 
     l2_distance = hy.delta_h(h1p,h2p)
-    #print h1_path,'path1'
-    #print h2_path,'path2'
-    h1p_tilde = np.fft.fft(h1p,norm=None)/sample_rate
-    h2p_tilde = np.fft.fft(h2p,norm=None)/sample_rate 
-    h1p_tilde_new = FrequencySeries(h1p_tilde[:len(h1p)/2], delta_f=delta_f)
-    h2p_tilde_new = FrequencySeries(h2p_tilde[:len(h2p)/2], delta_f=delta_f)
-    h1p_tilde_new.resize(f_len)
-    h2p_tilde_new.resize(f_len)
-    match_plus, i = match(h1p_tilde_new,h2p_tilde_new,psd=psd,low_frequency_cutoff=f_cutoff)
-    return(l2_distance,match_plus,hh1_shift_time,hh2_shift_time,hh1_freq,hh2_freq)
-    ##       0          1            2             3               4       5
+    match_plus,index = match(h1p,h2p, psd=psd, low_frequency_cutoff=f_cutoff)
+    return(l2_distance,match_plus,(hh1_shift_time,hh2_shift_time),(hh1_freq,hh2_freq))
 l2_norm = []
 match_filter = []
 hh1_shift_time = []
@@ -126,17 +100,21 @@ hh1_hybridize_freq = []
 hh2_hybridize_freq = []
 if __name__ == '__main__':
     p = mp.Pool(mp.cpu_count())
-    for i,h1_path in enumerate(h1_paths[:51]):
-        h2_path_iter = h2_paths[i:51]
+    for i,h1_path in enumerate(h1_paths[:100]):
+        h2_path_iter = h2_paths[i:100]
         func_compare = partial(compare,h1_path)
         comparisons = p.map(func_compare,h2_path_iter)
         for tuple_data in comparisons:
             l2_norm.append(tuple_data[0])
             match_filter.append(tuple_data[1])
-            hh1_shift_time.append(tuple_data[2])
-            hh2_shift_time.append(tuple_data[3])
-            hh1_hybridize_freq.append(tuple_data[4])
-            hh2_hybridize_freq.append(tuple_data[5])
+            shift_time_tuple = tuple_data[2]
+            hybridize_freq_tuple = tuple_data[3]
+            shift_time = hy.twodimarray_to_2array(shift_time_tuple)
+            hybridize_freq = hy.twodimarray_to_2array(hybridize_freq_tuple)
+            hh1_shift_time.append(shift_time[0])
+            hh2_shift_time.append(shift_time[1])
+            hh1_hybridize_freq.append(hybridize_freq[0])
+            hh2_hybridize_freq.append(hybridize_freq[1])
     h5_dir = 'HybridAnnex/'+sim_type+'/'+sim_name+str(ip2_h1)+'/Comparisons/'
     if not os.path.exists(os.path.dirname(h5_dir)):
         try:
@@ -150,13 +128,14 @@ if __name__ == '__main__':
         fd.attrs.create('approx2', approx2)
         fd.attrs.create('sim_name', sim_name)
         fd.attrs.create('PSD_name',psd_type)
-        fd.create_dataset(approx1+'_shift_time',data=hh1_shift_time)
-        fd.create_dataset(approx2+'_shift_time',data=hh2_shift_time)
-        fd.create_dataset(approx1+'_hybridize_freq',data=hh1_hybridize_freq)
-        fd.create_dataset(approx2+'_hybridize_freq',data=hh2_hybridize_freq)
+        fd.create_dataset('hh1_shift_time',data=hh1_shift_time)
+        fd.create_dataset('hh2_shift_time',data=hh2_shift_time)
+        fd.create_dataset('hh1_hybridize_freq',data=hh1_hybridize_freq)
+        fd.create_dataset('hh2_hybridize_freq',data=hh2_hybridize_freq)
         fd.create_dataset('L2_norm',data=l2_norm)
         fd.create_dataset('match_filter',data=match_filter)
         fd.close()
+
 '''
 tlen = max(len(hplus), len(hplus1))
 hplus.resize(tlen)
